@@ -43,14 +43,25 @@ if __name__ == '__main__':
     set_seed(1234)
 
     train_loader, _, num_classes, camera_num, view_num, q_val_loader, g_val_loader = dataloader(
-        args.Dataset_name, batch_size=args.batch_size, num_workers=args.num_workers, seq_len=args.seq_len
+        args.Dataset_name,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        seq_len=args.seq_len
     )
-    model = VID_Trans(num_classes=num_classes, camera_num=camera_num, pretrainpath=args.model_path)
+
+    model = VID_Trans(
+        num_classes=num_classes,
+        camera_num=camera_num,
+        pretrainpath=args.model_path
+    )
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     model = model.to(device)
 
-    loss_fun, center_criterion = make_loss(num_classes=num_classes, contrast_temp=args.con_temp)
+    loss_fun, center_criterion = make_loss(
+        num_classes=num_classes,
+        contrast_temp=args.con_temp
+    )
     center_criterion = center_criterion.to(device)
 
     optimizer_center = torch.optim.SGD(center_criterion.parameters(), lr=0.5)
@@ -62,10 +73,14 @@ if __name__ == '__main__':
     idtri_loss_meter = AverageMeter()
     center_loss_meter = AverageMeter()
     con_loss_meter = AverageMeter()
+    attn_loss_meter = AverageMeter()
     acc_meter = AverageMeter()
     best_rank1 = 0.0
 
-    print(f'Supervised contrastive loss enabled: True | weight={args.con_loss_w:.4f} | temp={args.con_temp:.4f}')
+    print(
+        f'Supervised contrastive loss enabled: True | '
+        f'weight={args.con_loss_w:.4f} | temp={args.con_temp:.4f}'
+    )
 
     for epoch in range(1, args.epochs + 1):
         start_time = time.time()
@@ -73,7 +88,9 @@ if __name__ == '__main__':
         idtri_loss_meter.reset()
         center_loss_meter.reset()
         con_loss_meter.reset()
+        attn_loss_meter.reset()
         acc_meter.reset()
+
         lr_scheduler.step(epoch)
         model.train()
 
@@ -88,22 +105,38 @@ if __name__ == '__main__':
 
             with amp.autocast(enabled=(device == 'cuda')):
                 score, feat, a_vals, global_contrast_feat = model(img, pid, cam_label=target_cam)
+
                 attn_noise = a_vals * labels2
                 attn_loss = attn_noise.sum(1).mean()
+
                 idtri_loss, center_loss, contrast_loss = loss_fun(
-                    score, feat, pid, contrast_feat=global_contrast_feat
+                    score,
+                    feat,
+                    pid,
+                    contrast_feat=global_contrast_feat
                 )
-                loss = idtri_loss + args.center_w * center_loss + attn_loss + args.con_loss_w * contrast_loss
+
+                loss = (
+                    idtri_loss
+                    + args.center_w * center_loss
+                    + attn_loss
+                    + args.con_loss_w * contrast_loss
+                )
 
             scaler.scale(loss).backward()
-            scaler.step(optimizer_main)
-            scaler.update()
 
+            # main optimizer step
+            scaler.step(optimizer_main)
+
+            # center optimizer step must be unscaled before manual gradient rescaling
             if args.center_w > 0:
+                scaler.unscale_(optimizer_center)
                 for param in center_criterion.parameters():
                     if param.grad is not None:
                         param.grad.data *= (1.0 / args.center_w)
                 optimizer_center.step()
+
+            scaler.update()
 
             if isinstance(score, list):
                 acc = (score[0].max(1)[1] == pid).float().mean()
@@ -115,16 +148,26 @@ if __name__ == '__main__':
             idtri_loss_meter.update(idtri_loss.item(), batch_size)
             center_loss_meter.update(center_loss.item(), batch_size)
             con_loss_meter.update(contrast_loss.item(), batch_size)
+            attn_loss_meter.update(attn_loss.item(), batch_size)
             acc_meter.update(acc.item(), 1)
 
             if device == 'cuda':
                 torch.cuda.synchronize()
+
             if iteration % 50 == 0:
                 print(
                     'Epoch[{}] Iteration[{}/{}] Loss: {:.3f}, Acc: {:.3f}, Base Lr: {:.2e} | '
-                    'idtri={:.3f} con={:.3f}'.format(
-                        epoch, iteration, len(train_loader), total_loss_meter.avg, acc_meter.avg,
-                        lr_scheduler._get_lr(epoch)[0], idtri_loss_meter.avg, con_loss_meter.avg
+                    'idtri={:.3f} center={:.3f} attn={:.3f} con={:.3f}'.format(
+                        epoch,
+                        iteration,
+                        len(train_loader),
+                        total_loss_meter.avg,
+                        acc_meter.avg,
+                        lr_scheduler._get_lr(epoch)[0],
+                        idtri_loss_meter.avg,
+                        center_loss_meter.avg,
+                        attn_loss_meter.avg,
+                        con_loss_meter.avg
                     )
                 )
 
@@ -134,10 +177,18 @@ if __name__ == '__main__':
             model.eval()
             rank1, mAP = test(model, q_val_loader, g_val_loader)
             print('CMC: %.4f, mAP : %.4f' % (rank1, mAP))
-            latest_path = os.path.join(args.output_dir, f'{args.Dataset_name}_camera_removed_supcon_latest.pth')
+
+            latest_path = os.path.join(
+                args.output_dir,
+                f'{args.Dataset_name}_camera_removed_supcon_latest.pth'
+            )
             torch.save(model.state_dict(), latest_path)
+
             if best_rank1 < rank1:
                 best_rank1 = rank1
-                best_path = os.path.join(args.output_dir, f'{args.Dataset_name}_camera_removed_supcon_best.pth')
+                best_path = os.path.join(
+                    args.output_dir,
+                    f'{args.Dataset_name}_camera_removed_supcon_best.pth'
+                )
                 torch.save(model.state_dict(), best_path)
                 print(f'[OK] Saved best checkpoint: {best_path}')
