@@ -35,7 +35,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_workers', default=4, type=int)
     parser.add_argument('--seq_len', default=4, type=int)
     parser.add_argument('--center_w', default=0.0005, type=float)
-    parser.add_argument('--con_loss_w', default=0.05, type=float)
+    parser.add_argument('--con_loss_w', default=0.01, type=float)
     parser.add_argument('--con_temp', default=0.07, type=float)
     args = parser.parse_args()
 
@@ -75,6 +75,7 @@ if __name__ == '__main__':
     con_loss_meter = AverageMeter()
     attn_loss_meter = AverageMeter()
     acc_meter = AverageMeter()
+
     best_rank1 = 0.0
 
     print(
@@ -125,10 +126,10 @@ if __name__ == '__main__':
 
             scaler.scale(loss).backward()
 
-            # main optimizer step
+            # step main optimizer
             scaler.step(optimizer_main)
 
-            # center optimizer step must be unscaled before manual gradient rescaling
+            # center optimizer step
             if args.center_w > 0:
                 scaler.unscale_(optimizer_center)
                 for param in center_criterion.parameters():
@@ -143,12 +144,12 @@ if __name__ == '__main__':
             else:
                 acc = (score.max(1)[1] == pid).float().mean()
 
-            batch_size = img.shape[0]
-            total_loss_meter.update(loss.item(), batch_size)
-            idtri_loss_meter.update(idtri_loss.item(), batch_size)
-            center_loss_meter.update(center_loss.item(), batch_size)
-            con_loss_meter.update(contrast_loss.item(), batch_size)
-            attn_loss_meter.update(attn_loss.item(), batch_size)
+            batch_size_now = img.shape[0]
+            total_loss_meter.update(loss.item(), batch_size_now)
+            idtri_loss_meter.update(idtri_loss.item(), batch_size_now)
+            center_loss_meter.update(center_loss.item(), batch_size_now)
+            con_loss_meter.update(contrast_loss.item(), batch_size_now)
+            attn_loss_meter.update(attn_loss.item(), batch_size_now)
             acc_meter.update(acc.item(), 1)
 
             if device == 'cuda':
